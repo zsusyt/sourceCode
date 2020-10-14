@@ -40,29 +40,33 @@ module.exports.default = axios;
 
 ## 认识axios
 
-​		axios本身就是通过createInstance创建出来的一个instance，axios上还有一个create方法，通过这个方法还能创建一个跟axios差不多的instance，区别就是前者使用了defaultConfig，create方法可以传入自定义的config，然后在create方法内部合并后再创建实例。
+​		axios是通过createInstance方法传入默认config创建出来的一个对象，axios上还有一个create方法，这个方法内部也是调用createInstance创建对象。好处就是可以再传入一个自定义config，跟默认config合并后，再传入createInstance方法。
 
-​		其实这里的操作有点迷，因为这些实例在使用的时候调用的都是Axios.prototype.request方法，而这个方法也是可以传入config，并在内部合并的，感觉是引入了不必要的复杂性。我理解这里主要是想突出这种设计：axios本身可以拿来直接用，如果有自定义需求，又可以用axios.create方法定制一个instance来用。
+​		这里的设计可以这么理解：如果没有特殊需求，可以拿来axios直接用，但是如果有一些预制config，可以通过为axios.create方法传入预制的config，来生成一个有一点特殊的对象来用。并且还可以在真正使用的时候再次传入每次请求时的特殊config，实现最大的灵活性。
 
-​		下面再说下这个一直提到的instance，从命名上来看，应该是通过某个构造函new出来的实例，但并不是，这只是一个普通的函数。当然js中函数也是对象，构造函数其实也不是什么特殊的函数，只是通过new的方式来使用，行为跟普通函数调用有区别而已。
+​		下面再来说createInstance生成的'instance'，从命名上来看，应该是通过某个构造函new出来的实例，但并不是，这只是一个普通的函数。当然js中函数也是对象，构造函数也不是什么特殊的函数，只是通过new的方式来使用，行为跟普通函数调用有区别而已。
 
+## createInstance		
 
-
-## instance		
-
-接下来重点研究下这个createInstance函数：
+接下来看下这个createInstance函数：
 
 ```js
 function createInstance(defaultConfig) {
   var context = new Axios(defaultConfig);
   // 这里主要研究这个
   var instance = bind(Axios.prototype.request, context);
-	。。。
+  
+  // 这些暂时先不管
+  // Copy axios.prototype to instance
+  utils.extend(instance, Axios.prototype, context);
+  // Copy context to instance
+  utils.extend(instance, context);
+  
   return instance;
 }
 ```
 
-暂时忽略utils.extend相关的操作，因为从字面上看他们只是对instance的一些扩展，不会改变instance的本质；最终的这个instance不是new Axios出来的那个东西，而是bind函数的返回值：
+暂时忽略utils.extend相关的操作，因为从字面上看他们只是对instance的一些扩展，不会改变instance的本质；最后return的这个instance不是new Axios出来的那个东西，而是bind函数的返回值：
 
 ```js
 module.exports = function bind(fn, thisArg) {
@@ -77,9 +81,11 @@ module.exports = function bind(fn, thisArg) {
 };
 ```
 
-也就是这个wrap函数： axios、axios.create出来的实例本质上都是这个wrap函数而已。
+也就是这个wrap函数： axios和axios.create的返回值都是这个wrap函数。
 
-那么通过一个常用case来看看使用过程发生了什么：
+
+
+那么通过一个常用case来看看到底发生了什么：
 
 ```js
 let param = {
@@ -92,25 +98,17 @@ export function getSth() {
 }
 ```
 
-上面的axios就是wrap函数，所以wrap中的arguments = [param]; （arguments并不是真正的数组，这里是示意性表示）
+上面的axios就是wrap函数，所以wrap中的arguments = [param]; （arguments并不是真正的数组，这里是示意性表示）。结合上面的bind调用，这里的fn就是Axios.prototype.request，thisArg就是context，axios(param)就是Axios.prototype.request.apply(context, [param])，等同于Axios.prototype.request(param).bind(context);
 
-结合上面的bind调用，这里的fn就是Axios.prototype.request，return axios(param)其实就是return fn.apply(thisArg, args)
+​		感觉上Axios.prototype.request方法应该是个纯函数，也就是没有副作用，不依赖this等。but, 他内部依赖了this，不是纯函数，如果不通过Axios的实例来调用，那就得绑定this来使用。
 
-fn简写为request，thisArg是context，args就是[param]，也就是：
+​		到这里为止，大概脉络基本清楚了。接下来考虑这个问题，上面的context是什么，起什么作用。其实context才是Axios这个构造函数new出来的实例，他主要就是起到提供上下文给bind函数使用（从名字上也可以看出这点）。
 
-Axios.prototype.request.apply(context, [param])  ==  Axios.prototype.request(param).bind(context);
-
-​		从感觉上Axios.prototype.request方法应该是个纯函数，也就是没有副作用，不依赖this等，但他不是，内部依赖了this，所以如果不是通过Axios的实例来调用，那就得绑定this来使用。
-
-​		到这里为止，很多东西都清楚了，但是还有个问题，上面的context到底是什么，起什么作用。其实context才是Axios这个构造函数new出来的实例，他主要就是起到提供上下文给bind函数使用（从名字上也可以看出这点）。
-
-## 简单总结：
+## 简单总结
 
 ​		简单总结一下：Axios构造函数new出来的实例并不是直接用来发请求的，他只是一个context，真正发请求的是Axios.prototype.request这个方法，但是他不是一个纯函数，依赖了this，所以需要new Axios出来的实例提供context。
 
-每次调用createInstance方法（可以通过axios.create使用）生成的实例都是在全新的context下执行的。
-
-
+​		每次调用createInstance方法（可以通过axios.create使用）生成的实例都是在全新的context下执行的。
 
 ## context
 
@@ -145,13 +143,13 @@ function Axios(instanceConfig) {
 
 主要带了defaults和interceptors两个属性。
 
-注，defaults中的配置不是真的axios这个库中的defaults，而是合并了库的defaults和createInstance时传入的config之后的一个defaultConfig；
+注，defaults中的配置不是axios这个库中的defaultConfig，而是合并了库的defaultConfig和createInstance时传入的config之后的一个合并的config；
 
 
 
 ## extend
 
-然后我们知道instance就是wrap函数，然后看看通过两个utils.extend都干了什么。
+我们知道instance就是wrap函数，接着看看两个extend都干了什么
 
 ```js
   utils.extend(instance, Axios.prototype, context);
@@ -174,37 +172,45 @@ function extend(a, b, thisArg) {
 ```js
 module.exports = function bind(fn, thisArg) {
   return function wrap() {
-    // 这一堆代码就是把arguments转换成一个真数组args，
+    // 这一堆代码就是把arguments转换成一个真数组args
+    var args = new Array(arguments.length);
+    for (var i = 0; i < args.length; i++) {
+      args[i] = arguments[i];
+    }
     return fn.apply(thisArg, args);
   };
 };
 ```
 
-这里稍微研究下源码的套了好几层的逻辑，就是把context上的defaults和interceptors属性以及request和getUri以及一对http methods（delete, get, head, options, post, put, patch），都挂在wrap函数上。
+这里稍微研究下源码中套了好几层的逻辑，就是把context上的defaults和interceptors属性以及request和getUri以及一堆http methods（delete, get, head, options, post, put, patch），都挂在wrap函数上。
 
 
 
-## 再次简单总结：在这之前都是设置阶段
+## 再次简单总结
+
+在这之前都是处于设置阶段，也就是设置axios，还没真正发起请求。
 
 最终通过createInstance拿到的对象如下：
 
-let ret = bind(Axios.prototype.request, context)  <- 1
+**let ret = bind(Axios.prototype.request, context)**
 
 ret.defaults = context.defaults
 
 ret.interceptors = context.interceptors
 
-ret.request = bind(Axios.prototype.request, context) <- 2
+**ret.request = bind(Axios.prototype.request, context)**
 
 ret.getUri = bind(Axios.prototype.getUri, context)
 
 ret.get = bind(Axios.prototype.get, context)
 
-上面1、2是同一个东西，当然用===判断是不一样的，但是执行起来效果一样（因为是同一个context）；
+上面加粗的两个对象用===判断是不同的，但是使用起来效果却是一样的（因为是同一个context）；
 
 
 
-## 核心：request函数的逻辑，这里进入执行阶段了
+## 核心：request函数的逻辑
+
+这里开始进入执行阶段了，真正发起请求了。
 
 ```js
 Axios.prototype.request = function request(config) {
@@ -249,9 +255,9 @@ Axios.prototype.request = function request(config) {
 };
 ```
 
-这里mergeConfig的实现还是蛮复杂的，不过我们先不研究，暂且就简单理解为合并两个对象吧。
+这里mergeConfig的实现还是蛮复杂的，不过我们不研究，暂且就简单理解为合并两个对象吧。
 
-前面一半都是在处理config，比较简单。
+前面一半都是在处理config，略过不看。
 
 
 
@@ -261,13 +267,13 @@ Axios.prototype.request = function request(config) {
 
 
 
-这里首先要明确一个事情，代码执行到这里意味着已经开始真正执行请求的逻辑了，而在这之前我们其实可以做很多设置的，
-
-比如设置interceptors。
+这里首先要明确一个事情，代码执行到这里意味着已经开始真正发起请求了，而在这之前我们还有机会做设置，比如设置interceptors。
 
 
 
-## 打断一下，先研究interceptors，再次回到设置阶段
+## interceptors
+
+再次回到设置阶段：
 
 ```js
   this.interceptors = {
@@ -276,7 +282,7 @@ Axios.prototype.request = function request(config) {
   };
 ```
 
-这里的interceptors分了两种：request和response，他们也不是简单的数组，而是提供了一个InterceptorManager来管理对他们的操作，但内部还是得有一个数组来存放我们传入的interceptors
+这里的interceptors分了两种：request和response，他们不是简单的数组，而是提供了一个InterceptorManager来管理对他们的操作，但内部还是得有一个数组来存放我们传入的interceptors
 
 ```js
 function InterceptorManager() {
@@ -292,40 +298,15 @@ InterceptorManager.prototype.use = function use(fulfilled, rejected) {
   });
   return this.handlers.length - 1;
 };
-
-/**
- * Remove an interceptor from the stack
- */
-InterceptorManager.prototype.eject = function eject(id) {
-  if (this.handlers[id]) {
-    this.handlers[id] = null;
-  }
-};
-
-/**
- * Iterate over all the registered interceptors
- * This method is particularly useful for skipping over any
- * interceptors that may have become `null` calling `eject`.
- */
-InterceptorManager.prototype.forEach = function forEach(fn) {
-  utils.forEach(this.handlers, function forEachHandler(h) {
-    if (h !== null) {
-      fn(h);
-    }
-  });
-};
-
-module.exports = InterceptorManager;
-
 ```
 
 我们看到构造函数内部还是有一个数组，符合我们的猜想。
 
-这里的实现类似eventEmitter，主要看use这个方法：
+这里的实现类似node中的eventEmitter，下面主要看use这个方法：
 
 接受两个函数，类似promise的用法，然后每个handler对象有两个key：fulfilled和rejected
 
-所以使用case如下：
+使用case如下：
 
 ```JS
 axios.interceptors.request.use(
@@ -358,7 +339,9 @@ service.interceptors.response.use(
 
 
 
-## 继续request的逻辑，回到执行阶段
+## 继续request的逻辑
+
+回到执行阶段：
 
 ```js
 Axios.prototype.request = function request(config) {
@@ -398,16 +381,56 @@ while (chain.length) {
 
 这里就实现了先执行requestInterceptors，然后通过dispatchRequest真正发起请求，然后是responseInterceptors。
 
-利用了Promise的特性，让config、response、error会在多个interceptors之间传递；
+利用了Promise的特性，让config、response、error在多个interceptors之间传递；
 
+## dispatchRequest
 
-
-## dispatchRequest，继续研究执行阶段
+依然还在执行阶段
 
 ```js
 module.exports = function dispatchRequest(config) {
   throwIfCancellationRequested(config);
+    // Ensure headers exist
+  config.headers = config.headers || {};
+
+  // Transform request data
+  config.data = transformData(
+    config.data,
+    config.headers,
+    config.transformRequest
+  );
+  
 	。。。
+  
+  var adapter = config.adapter || defaults.adapter;
+
+  return adapter(config).then(function onAdapterResolution(response) {
+    throwIfCancellationRequested(config);
+
+    // Transform response data
+    response.data = transformData(
+      response.data,
+      response.headers,
+      config.transformResponse
+    );
+
+    return response;
+  }, function onAdapterRejection(reason) {
+    if (!isCancel(reason)) {
+      throwIfCancellationRequested(config);
+
+      // Transform response data
+      if (reason && reason.response) {
+        reason.response.data = transformData(
+          reason.response.data,
+          reason.response.headers,
+          config.transformResponse
+        );
+      }
+    }
+
+    return Promise.reject(reason);
+  });
 };
 ```
 
@@ -417,7 +440,7 @@ module.exports = function dispatchRequest(config) {
 
 答案是可以，那么如何实现呢？
 
-这里先埋一个伏笔，等把request的执行逻辑演技完再来看这个话题。
+这里先埋一个伏笔，等把request的执行逻辑研究完再来继续这个话题。
 
 ```js
   // Transform request data
@@ -428,7 +451,7 @@ module.exports = function dispatchRequest(config) {
   );
 ```
 
-这里可以把config传入的data做统一的处理，比如格式什么的。
+这里可以把config传入的data做统一的处理，比如调整格式之类的。
 
 接下来是重点：
 
@@ -464,7 +487,7 @@ module.exports = function dispatchRequest(config) {
   });
 ```
 
-这里通过使用不同的adapter实现了针对不同环境的（浏览器、node）适配。
+这里通过使用不同的adapter实现了针对不同环境（浏览器、node）的适配。
 
 这里再次出现throwIfCancellationRequested，都先忽略。
 
@@ -477,11 +500,11 @@ module.exports = function dispatchRequest(config) {
     );
 ```
 
-同样这里可以对response中的data做统一处理，然后就是直接return response了，交给后面的responseInterceptors来处理了，如果没有的话，就进入到库的使用者写的then或者catch中了。
+同样这里可以对response中的data做统一处理，然后就是直接return response了，交给后面的responseInterceptors来处理了，如果没有的话，就进入到使用者写的then或者catch中了。
 
 
 
-## adapter的实现与request cancelation
+## adapter与cancel
 
 ```js
 var adapter = config.adapter || defaults.adapter;
@@ -559,29 +582,17 @@ module.exports = function xhrAdapter(config) {
 };
 ```
 
-在----------------request的分割线-------------------之前都是简化了细节的对XMLHttpRequest的封装：
+​		在----------------request的分割线-------------------之前都是简化了细节的对XMLHttpRequest的封装：
 
-​		逻辑也很简单，new XMLHttpRequest出来，open之后注册各种事件响应函数：
-
-onreadystatechange
-
-onabort
-
-onerror
-
-ontimeout
-
-上传和下载的progress
-
-然后再send
+​		逻辑也很简单，new XMLHttpRequest出来，open之后注册各种事件响应函数：onreadystatechange，onabort，onerror，ontimeout，上传和下载的progress，然后再send。
 
 ​		这其中有很多细节，比如设置http basic authentication的支持，封装response，封装error，添加xsrf支持，设置其他hearders，responseType的设置，withCredentidals设置，可以单独写个文章来总结一下。
 
 
 
-之后和-----------------cancelation的分割线---------------------之前都是对cancelation的封装
+​	之后和-----------------cancelation的分割线---------------------之前都是对cancelation的封装
 
-​		因为new XMLHttpRequest被封装在xhr adapter之内了，普通用户没法接触到他，不能直接执行request.abort()。但是如果想cancal请求，必须要执行这个方法。
+​		因为new出来的request被封装在xhr adapter之内了，普通用户没法接触到他，不能直接执行request.abort()。但是如果想cancal请求，必须要执行这个方法。
 
 ​		axios给出的方案是通过在config中提供一个cancalToken（因为config是贯穿整个请求始终的，很多地方的设计都利用了这一点），通过cancelToken提供的能力来实现cancelation。
 
@@ -631,9 +642,26 @@ module.exports = CancelToken;
 
 ```
 
-​		初一看很绕，new CancelToken的时候，接受一个executer；接着在构造函数内部生成一个new Promise中，把resolve函数的引用给一个外面的变量resolvePromise；然后在执行executer的时候又给这个外部传入的executer函数传入了一个cancel函数，这个cancel函数是延迟执行的，也就是不在生成cancelToken的时候执行，那么可以通过在提供executer的时候，拿到内部这个cancel函数。这个跟之前拿到Promise中的resolve函数的技巧是一样的。
+​		初一看很绕，new CancelToken的时候，接受一个executer；接着在构造函数内部生成了一个promise，把这个promise的resolve函数的引用赋给一个promise之外的变量resolvePromise。
 
-​		拿到这个cancel函数有什么用呢？可以abort请求吗？猜测应该是可以的，但是函数内部并不能直接abort，我们来看看axios是如何实现的：
+​		接着在执行executer的时候，给这个外部传入的executer函数传入了一个cancel函数。这个cancel函数是延迟执行的，也就是不在生成cancelToken的时候执行，那么可以通过在提供executer的时候，拿到内部这个cancel函数。这个跟之前拿到Promise中的resolve函数的技巧是一样的。
+
+​		如果把代码改写一下就容易理解了：
+
+```js
+let cancel = function cancel(message) {
+  if (token.reason) {
+    // Cancellation has already been requested
+    return;
+  }
+
+  token.reason = new Cancel(message);
+  resolvePromise(token.reason);
+}
+executor(cancel);
+```
+
+​		拿到这个cancel函数有什么用呢？可以abort请求吗？猜测应该是可以的，我们来看看这个cancel函数的实现：
 
 ```js
 function cancel(message) {
@@ -647,7 +675,7 @@ function cancel(message) {
   }
 ```
 
-执行cancel函数的时候只是resolve了cancelToken内部的Promise，所以应该是在这个Promise的then中来处理的：
+​		我们发现cancel函数内并没有直接abort请求，执行cancel函数的时候只是resolve了cancelToken内部的promise，所以猜测应该是在这个promise的then中来处理的：
 
 ```js
     if (config.cancelToken) {
@@ -688,9 +716,7 @@ CancelToken.source = function source() {
 };
 ```
 
-是CancelToken构造函数上的静态方法，其实也可以看做直接使用构造函数的一个示例。
-
-
+source是CancelToken构造函数上的静态方法，这里也可以看做直接使用构造函数的一个示例。
 
 ## http
 
